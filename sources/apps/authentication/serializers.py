@@ -2,20 +2,21 @@ import secrets
 import string
 import uuid
 
+from django.contrib.auth.hashers import make_password
 from rest_framework import serializers
 from .models import User
 
 class UserSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = User
-		fields = ('user_id', 'user_secret', 'scopes', 'date_joined', 'last_login')
+		fields = ('user_id', 'scopes', 'date_joined', 'last_login')
 
 def generate_user_id():
 	return str(uuid.uuid4())
 
-def generate_user_secret(length=16):
-	characters = string.ascii_letters + string.digits
-	return ''.join(secrets.choice(characters) for _ in range(length))
+def generate_user_secret(length=32):
+	raw_secret = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
+	return raw_secret
 
 class UserRegistrationSerializer(serializers.Serializer):
 	class Meta:
@@ -23,14 +24,17 @@ class UserRegistrationSerializer(serializers.Serializer):
 		fields = ('user_id', 'user_secret')
 		extra_kwargs = {'user_secret': {'write_only': True}}
 
-	def create(self, validated_data) -> User:
+	def create(self, validated_data):
 
 		user_id = generate_user_id()
-		user_secret = generate_user_secret()
+		raw_secret = generate_user_secret()
 
-		user = User.objects.create(
+		user = User.objects.create_user(
 			user_id=user_id,
-			user_secret=user_secret
+			user_secret=raw_secret,
 		)
 
-		return user
+		return {
+			'user_id': user.user_id,
+			'user_secret': raw_secret,
+		}
