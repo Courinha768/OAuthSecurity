@@ -5,24 +5,25 @@ from django.contrib.auth import authenticate
 from django.core.cache import cache, InvalidCacheBackendError
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
-from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
-from .models import User
-from .serializers import UserSerializer, UserRegistrationSerializer
+from .authentication import validate_token
+from .models import Consumer
+from .serializers import ConsumerSerializer, ConsumerRegistrationSerializer
+from .permissions import AllowAny, IsAuthenticated, IsStaff
 
 logger = logging.getLogger(__name__)
 
-class UserViewSet(viewsets.ModelViewSet):
-	queryset = User.objects.all()
-	serializer_class = UserSerializer
+class ConsumerViewSet(viewsets.ViewSet):
+	queryset = Consumer.objects.all()
+	serializer_class = ConsumerSerializer
 	permission_classes = [AllowAny]
 
 	def get_serializer_class(self):
 		if self.action in ['register']:
-			return UserRegistrationSerializer
-		return UserSerializer
+			return ConsumerRegistrationSerializer
+		return ConsumerSerializer
 
 	@action(detail=False, methods=['post'], url_path='login')
 	def login(self, request):
@@ -42,9 +43,8 @@ class UserViewSet(viewsets.ModelViewSet):
 		except (InvalidCacheBackendError, ConnectionError):
 			logger.warning("Redis cache is unavailable. Falling back to database.")
 
-
 		user = authenticate(request, user_id=user_id, user_secret=user_secret)
-		logger.info(f"User: {user}")
+		logger.info(f"Consumer: {user}")
 
 		if user:
 			logger.info(f"Successful login for user: {user_id}")
@@ -52,8 +52,7 @@ class UserViewSet(viewsets.ModelViewSet):
 			return Response({
 				'access_token': str(refresh.access_token),
 				'refresh_token': str(refresh),
-				'user_id': user.user_id,
-				'scopes': user.scopes
+				'user': ConsumerSerializer(user).data,
 			}, status=status.HTTP_200_OK)
 
 		try:
@@ -77,36 +76,15 @@ class UserViewSet(viewsets.ModelViewSet):
 	@action(detail=False, methods=['post'], url_path='check-token')
 	def check_token(self, request):
 		token = request.data.get('access_token')
+		scope = request.data.get('scope')
 		if not token:
 			return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-		cached_user = None
-		try:
-			cached_user = cache.get(f"token:{token}")
-		except (InvalidCacheBackendError, ConnectionError):
-			logger.warning("Redis cache is unavailable. Falling back to database.")
+		user_data = validate_token(token)
 
-		if cached_user:
-			return Response(cached_user, status=status.HTTP_200_OK)
-
-		try:
-			refresh = RefreshToken(token)
-			user = User.objects.get(user_id=refresh.get('user_id'))
-
-			user_data =	{
-				'valid': True,
-				'access_token': str(refresh.access_token),
-				'refresh_token': str(refresh),
-				'user_id': user.user_id,
-				'scopes': user.scopes
-			}
-
-			cache.set(f"token:{token}", user_data, timeout=900)
-			return Response(user_data, status=status.HTTP_200_OK)
-		except (TokenError, User.DoesNotExist):
+		if not user_data or (scope and user_data[0] and scope not in user_data[0].get('scopes')):
 			return Response({'valid': False, 'message': 'Invalid token'}, status=status.HTTP_401_UNAUTHORIZED)
-		except (InvalidCacheBackendError, ConnectionError):
-			logger.warning("Redis cache is unavailable. Skipping caching.")
+		return Response({'valid': True, 'user': user_data}, status=status.HTTP_200_OK)
 
 	@action(detail=False, methods=['post'], url_path='refresh-token')
 	def refresh_token(self, request):
@@ -119,7 +97,7 @@ class UserViewSet(viewsets.ModelViewSet):
 
 		try:
 			refresh = RefreshToken(refresh_token)
-			user = User.objects.get(id=refresh['user_id'])
+			user = Consumer.objects.get(id=refresh['user_id'])
 			new_refresh = RefreshToken.for_user(user)
 
 			cache.set(f"blacklist:{refresh_token}", "revoked", timeout=604800)
@@ -127,10 +105,47 @@ class UserViewSet(viewsets.ModelViewSet):
 			return Response({
 				'access_token': str(new_refresh.access_token),
 				'refresh_token': str(new_refresh),
-				'user_id': user.user_id,
-				'scopes': user.scopes
+				'user': ConsumerSerializer(user).data,
 			}, status=status.HTTP_200_OK)
 		except TokenError:
 			return Response({'error': 'Invalid token'}, status=status.HTTP_401_UNAUTHORIZED)
 		except (InvalidCacheBackendError, ConnectionError):
 			logger.warning("Redis cache is unavailable. Skipping caching.")
+
+class ManageViewSet(viewsets.ModelViewSet):
+	queryset = Consumer.objects.all()
+	serializer_class = ConsumerSerializer
+	permission_classes = [IsStaff]
+
+	@action(detail=False, methods=['post'], url_path='scopes')
+	def manage_scopes(self, request):
+		user_id             : str = request.data.get('user_id')
+		scopes_to_add		: list = request.data.get('add')
+		scopes_to_remove	: list = request.data.get('remove')
+
+		try:
+			user = Consumer.objects.get(user_id=user_id)
+		except Consumer.DoesNotExist:
+			return Response({'error': 'User not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+		if scopes_to_add:
+			for scope in scopes_to_add:
+				user.add_scope(scope)
+		if scopes_to_remove:
+			for scope in scopes_to_remove:
+				user.remove_scope(scope)
+		return Response({'user': ConsumerSerializer(user).data}, status=status.HTTP_200_OK)
+
+	@action(detail=False, methods=['post'], url_path='admin')
+	def manage_scopes(self, request):
+		user_id: str = request.data.get('user_id')
+		admin : bool = request.data.get('admin')
+
+		try:
+			user = Consumer.objects.get(user_id=user_id)
+		except Consumer.DoesNotExist:
+			return Response({'error': 'User not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+		user.set_admin(admin)
+		return Response({'user': ConsumerSerializer(user).data}, status=status.HTTP_200_OK)
+

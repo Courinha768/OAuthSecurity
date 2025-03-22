@@ -4,12 +4,12 @@ import uuid
 
 from django.contrib.auth.hashers import make_password
 from rest_framework import serializers
-from .models import User
+from .models import Consumer
 
-class UserSerializer(serializers.ModelSerializer):
+class ConsumerSerializer(serializers.ModelSerializer):
 	class Meta:
-		model = User
-		fields = ('user_id', 'scopes', 'date_joined', 'last_login')
+		model = Consumer
+		fields = ('user_id', 'scopes', 'date_joined', 'last_login', 'is_staff')
 
 def generate_user_id():
 	return str(uuid.uuid4())
@@ -18,10 +18,10 @@ def generate_user_secret(length=32):
 	raw_secret = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
 	return raw_secret
 
-class UserRegistrationSerializer(serializers.Serializer):
+class ConsumerRegistrationSerializer(serializers.Serializer):
 	class Meta:
-		model = User
-		fields = ('user_id', 'user_secret')
+		model = Consumer
+		fields = ('user_id', 'user_secret', 'scopes', 'name', 'description', 'date_joined', 'last_login')
 		extra_kwargs = {'user_secret': {'write_only': True}}
 
 	def create(self, validated_data):
@@ -29,7 +29,7 @@ class UserRegistrationSerializer(serializers.Serializer):
 		user_id = generate_user_id()
 		raw_secret = generate_user_secret()
 
-		user = User.objects.create_user(
+		user = Consumer.objects.create_user(
 			user_id=user_id,
 			user_secret=raw_secret,
 		)
